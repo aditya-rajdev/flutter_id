@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:excel/excel.dart';
@@ -50,11 +51,9 @@ class AppFileStorage {
     if (kIsWeb) {
       baseDir = await getApplicationDocumentsDirectory();
     } else if (Platform.isAndroid) {
-      // Use Pictures directory or external storage
       final extDir = await getExternalStorageDirectory();
       if (extDir != null) {
-        // Pictures/ID_Camera/...
-        final picturesPath = extDir.path.split('/Android/data')[0] + '/Pictures';
+        final picturesPath = '${extDir.path.split('/Android/data')[0]}/Pictures';
         baseDir = Directory(picturesPath);
       } else {
         baseDir = await getApplicationDocumentsDirectory();
@@ -83,7 +82,7 @@ class AppFileStorage {
     final cleanSchool = sanitize(schoolName);
     final cleanClass = sanitize(className);
     final cleanSection = sanitize(sectionName);
-    final key = 'SKIPPED_SET_${cleanSchool}_${cleanClass}_${cleanSection}';
+    final key = 'SKIPPED_SET_${cleanSchool}_${cleanClass}_$cleanSection';
     final list = prefs.getStringList(key) ?? [];
     return list.map((e) => int.tryParse(e) ?? 0).where((e) => e > 0).toSet();
   }
@@ -98,7 +97,7 @@ class AppFileStorage {
     final cleanSchool = sanitize(schoolName);
     final cleanClass = sanitize(className);
     final cleanSection = sanitize(sectionName);
-    final key = 'SKIPPED_SET_${cleanSchool}_${cleanClass}_${cleanSection}';
+    final key = 'SKIPPED_SET_${cleanSchool}_${cleanClass}_$cleanSection';
     final current = (prefs.getStringList(key) ?? []).toSet();
     current.add(rollNumber.toString());
     await prefs.setStringList(key, current.toList());
@@ -114,7 +113,7 @@ class AppFileStorage {
     final cleanSchool = sanitize(schoolName);
     final cleanClass = sanitize(className);
     final cleanSection = sanitize(sectionName);
-    final key = 'SKIPPED_SET_${cleanSchool}_${cleanClass}_${cleanSection}';
+    final key = 'SKIPPED_SET_${cleanSchool}_${cleanClass}_$cleanSection';
     final current = (prefs.getStringList(key) ?? []).toSet();
     current.remove(rollNumber.toString());
     await prefs.setStringList(key, current.toList());
@@ -266,7 +265,6 @@ class AppFileStorage {
     final file = File('${dir.path}/$fileName');
     await file.writeAsBytes(imageBytes);
 
-    // If it was skipped earlier, remove from skipped set
     await removeSkippedRoll(
       schoolName: schoolName,
       className: className,
@@ -328,6 +326,8 @@ class AppFileStorage {
     );
   }
 
+  /// Advanced Excel Export: Builds XLSX workbook with Roll Numbers, Photo Filenames,
+  /// Status, and embedded JPEG image drawings matching Apache POI XSSFWorkbook.
   static Future<void> exportToExcel({
     required String schoolName,
     required String className,
@@ -343,8 +343,8 @@ class AppFileStorage {
     // Header Row
     sheet.appendRow([
       TextCellValue('Roll Number'),
+      TextCellValue('Actual Photo / File Name'),
       TextCellValue('Status'),
-      TextCellValue('Photo File Name'),
     ]);
 
     final dir = await getSectionDirectory(
@@ -353,7 +353,10 @@ class AppFileStorage {
       sectionName: sectionName,
     );
 
-    for (final roll in totalRolls) {
+    final imageFiles = <int, File>{};
+
+    for (var i = 0; i < totalRolls.length; i++) {
+      final roll = totalRolls[i];
       final rollStr = roll.toString().padLeft(3, '0');
       final fileName = getPhotoFileName(
         className: className,
@@ -363,21 +366,112 @@ class AppFileStorage {
       final isCaptured = capturedSet.contains(roll);
       final file = File('${dir.path}/$fileName');
 
+      if (isCaptured && file.existsSync()) {
+        imageFiles[i + 1] = file; // row index (1-based, after header at row 0)
+        sheet.setRowHeight(i + 1, 60.0); // Set tall row height for image cell
+      }
+
       sheet.appendRow([
         TextCellValue(rollStr),
-        TextCellValue(isCaptured && file.existsSync() ? 'Captured' : 'Missing'),
-        TextCellValue(isCaptured && file.existsSync() ? fileName : 'N/A'),
+        TextCellValue(isCaptured && file.existsSync() ? fileName : 'Missing'),
+        TextCellValue(isCaptured && file.existsSync() ? 'Captured' : 'Pending'),
       ]);
     }
 
-    final bytes = excel.encode();
-    if (bytes == null) return;
+    sheet.setColumnWidth(0, 16.0);
+    sheet.setColumnWidth(1, 32.0);
+    sheet.setColumnWidth(2, 16.0);
+
+    final baseExcelBytes = excel.encode();
+    if (baseExcelBytes == null) return;
+
+    // Inject Drawing Objects & JPEG Media into XLSX ZIP Archive (Apache POI equivalent)
+    final archive = ZipDecoder().decodeBytes(baseExcelBytes);
+    final updatedArchive = Archive();
+
+    // Copy existing ZIP files
+    for (final archiveFile in archive.files) {
+      if (archiveFile.name != '[Content_Types].xml' &&
+          archiveFile.name != 'xl/worksheets/sheet1.xml' &&
+          archiveFile.name != 'xl/worksheets/_rels/sheet1.xml.rels') {
+        updatedArchive.addFile(archiveFile);
+      }
+    }
+
+    final drawingRelsXml = StringBuffer();
+    drawingRelsXml.writeln('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>');
+    drawingRelsXml.writeln('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">');
+
+    final drawingXml = StringBuffer();
+    drawingXml.writeln('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>');
+    drawingXml.writeln('<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">');
+
+    var imgIdx = 1;
+    imageFiles.forEach((rowIndex, file) {
+      final bytes = file.readAsBytesSync();
+      final mediaPath = 'xl/media/image$imgIdx.jpeg';
+      updatedArchive.addFile(ArchiveFile(mediaPath, bytes.length, bytes));
+
+      drawingRelsXml.writeln('<Relationship Id="rId$imgIdx" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image$imgIdx.jpeg"/>');
+
+      drawingXml.writeln('<xdr:twoCellAnchor editAs="oneCell">');
+      drawingXml.writeln('<xdr:from><xdr:col>1</xdr:col><xdr:colOff>10000</xdr:colOff><xdr:row>$rowIndex</xdr:row><xdr:rowOff>10000</xdr:rowOff></xdr:from>');
+      drawingXml.writeln('<xdr:to><xdr:col>2</xdr:col><xdr:colOff>-10000</xdr:colOff><xdr:row>${rowIndex + 1}</xdr:row><xdr:rowOff>-10000</xdr:rowOff></xdr:to>');
+      drawingXml.writeln('<xdr:pic>');
+      drawingXml.writeln('<xdr:nvPicPr><xdr:cNvPr id="$imgIdx" name="Picture $imgIdx"/><xdr:cNvPicPr/></xdr:nvPicPr>');
+      drawingXml.writeln('<xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId$imgIdx"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>');
+      drawingXml.writeln('<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>');
+      drawingXml.writeln('</xdr:pic>');
+      drawingXml.writeln('<xdr:clientData/>');
+      drawingXml.writeln('</xdr:twoCellAnchor>');
+
+      imgIdx++;
+    });
+
+    drawingRelsXml.writeln('</Relationships>');
+    drawingXml.writeln('</xdr:wsDr>');
+
+    if (imageFiles.isNotEmpty) {
+      final drawingXmlStr = drawingXml.toString();
+      final drawingRelsXmlStr = drawingRelsXml.toString();
+
+      updatedArchive.addFile(ArchiveFile('xl/drawings/drawing1.xml', drawingXmlStr.length, utf8.encode(drawingXmlStr)));
+      updatedArchive.addFile(ArchiveFile('xl/drawings/_rels/drawing1.xml.rels', drawingRelsXmlStr.length, utf8.encode(drawingRelsXmlStr)));
+
+      final sheetRelsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>';
+      updatedArchive.addFile(ArchiveFile('xl/worksheets/_rels/sheet1.xml.rels', sheetRelsXml.length, utf8.encode(sheetRelsXml)));
+
+      final sheetFile = archive.findFile('xl/worksheets/sheet1.xml');
+      if (sheetFile != null) {
+        var sheetStr = utf8.decode(sheetFile.content as List<int>);
+        sheetStr = sheetStr.replaceFirst('</worksheet>', '<drawing r:id="rId1"/></worksheet>');
+        updatedArchive.addFile(ArchiveFile('xl/worksheets/sheet1.xml', sheetStr.length, utf8.encode(sheetStr)));
+      }
+
+      final contentTypesFile = archive.findFile('[Content_Types].xml');
+      if (contentTypesFile != null) {
+        var ctStr = utf8.decode(contentTypesFile.content as List<int>);
+        if (!ctStr.contains('Extension="jpeg"')) {
+          ctStr = ctStr.replaceFirst('</Types>', '<Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>');
+        }
+        updatedArchive.addFile(ArchiveFile('[Content_Types].xml', ctStr.length, utf8.encode(ctStr)));
+      }
+    } else {
+      // Re-add original sheet and content types if no images
+      final sheetFile = archive.findFile('xl/worksheets/sheet1.xml');
+      if (sheetFile != null) updatedArchive.addFile(sheetFile);
+      final ctFile = archive.findFile('[Content_Types].xml');
+      if (ctFile != null) updatedArchive.addFile(ctFile);
+    }
+
+    final finalExcelData = ZipEncoder().encode(updatedArchive);
+    if (finalExcelData == null) return;
 
     final tempDir = await getTemporaryDirectory();
     final cleanClass = sanitize(className);
     final cleanSection = sanitize(sectionName);
     final excelFile = File('${tempDir.path}/Catalog_${cleanClass}_$cleanSection.xlsx');
-    await excelFile.writeAsBytes(bytes);
+    await excelFile.writeAsBytes(finalExcelData);
 
     await Share.shareXFiles(
       [XFile(excelFile.path)],

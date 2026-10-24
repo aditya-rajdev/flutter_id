@@ -36,8 +36,6 @@ class _CameraScreenState extends State<CameraScreen> {
 
   late int _currentRoll;
   late int _endRollInt;
-  int _savedCount = 0;
-  int _skippedCount = 0;
 
   bool _isCapturing = false;
   bool _isFlashing = false;
@@ -106,6 +104,7 @@ class _CameraScreenState extends State<CameraScreen> {
     });
 
     try {
+      SystemSound.play(SystemSoundType.click);
       HapticFeedback.mediumImpact();
       final XFile imageFile = await _controller!.takePicture();
       final bytes = await imageFile.readAsBytes();
@@ -119,7 +118,6 @@ class _CameraScreenState extends State<CameraScreen> {
       );
 
       setState(() {
-        _savedCount++;
         if (_currentRoll < _endRollInt) {
           _currentRoll++;
         }
@@ -154,7 +152,6 @@ class _CameraScreenState extends State<CameraScreen> {
     );
 
     setState(() {
-      _skippedCount++;
       if (_currentRoll < _endRollInt) {
         _currentRoll++;
       }

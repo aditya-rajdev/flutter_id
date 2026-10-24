@@ -1,9 +1,64 @@
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
 
 import '../../../../data/storage/app_file_storage.dart';
 import '../../../photo_gallery/photo_gallery_screen.dart';
+
+enum QualityMode { auto, high, standard }
+
+enum FaceEnhancementMode { off, natural }
+
+/// Isolate worker for natural skin smoothing while preserving facial features and sharpness.
+List<int> _applyNaturalFaceEnhancement(List<int> bytes) {
+  try {
+    final image = img.decodeImage(Uint8List.fromList(bytes));
+    if (image == null) return bytes;
+
+    // Create a subtle gaussian blur for skin smoothing layer
+    final smooth = img.gaussianBlur(image, radius: 3);
+
+    // Perform edge-preserving blend:
+    // High-contrast edge pixels (eyes, eyebrows, lips, hair, contours) retain 100% original sharpness.
+    // Mid-tone skin areas get subtle blend (75% original + 25% smooth), gently softening blemishes and sensor noise.
+    for (var y = 0; y < image.height; y++) {
+      for (var x = 0; x < image.width; x++) {
+        final pOrig = image.getPixel(x, y);
+        final pSmooth = smooth.getPixel(x, y);
+
+        final rDiff = (pOrig.r - pSmooth.r).abs();
+        final gDiff = (pOrig.g - pSmooth.g).abs();
+        final bDiff = (pOrig.b - pSmooth.b).abs();
+        final maxDiff = rDiff > gDiff
+            ? (rDiff > bDiff ? rDiff : bDiff)
+            : (gDiff > bDiff ? gDiff : bDiff);
+
+        if (maxDiff < 35) {
+          final newR = (pOrig.r * 0.75 + pSmooth.r * 0.25).round().clamp(
+            0,
+            255,
+          );
+          final newG = (pOrig.g * 0.75 + pSmooth.g * 0.25).round().clamp(
+            0,
+            255,
+          );
+          final newB = (pOrig.b * 0.75 + pSmooth.b * 0.25).round().clamp(
+            0,
+            255,
+          );
+          image.setPixelRgb(x, y, newR, newG, newB);
+        }
+      }
+    }
+
+    return img.encodeJpg(image, quality: 92);
+  } catch (e) {
+    debugPrint('Face enhancement error: $e');
+    return bytes;
+  }
+}
 
 class CameraScreen extends StatefulWidget {
   final String schoolName;
@@ -32,7 +87,12 @@ class _CameraScreenState extends State<CameraScreen> {
 
   FlashMode _flashMode = FlashMode.off;
   bool _showFlashMenu = false;
+  bool _showSettingsMenu = false;
   double _zoomLevel = 1.0;
+
+  QualityMode _qualityMode = QualityMode.auto;
+  FaceEnhancementMode _faceEnhancementMode = FaceEnhancementMode.off;
+  String _detectedResolutionLabel = 'Auto (Max)';
 
   late int _currentRoll;
   late int _endRollInt;
@@ -59,19 +119,40 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  ResolutionPreset _resolvePreset(QualityMode mode) {
+    switch (mode) {
+      case QualityMode.auto:
+      case QualityMode.high:
+        return ResolutionPreset.max;
+      case QualityMode.standard:
+        return ResolutionPreset.high;
+    }
+  }
+
   Future<void> _setupController(CameraDescription camera) async {
     if (_controller != null) {
       await _controller!.dispose();
     }
 
-    _controller = CameraController(
-      camera,
-      ResolutionPreset.high,
-      enableAudio: false,
-    );
+    final preset = _resolvePreset(_qualityMode);
+
+    _controller = CameraController(camera, preset, enableAudio: false);
 
     try {
       await _controller!.initialize();
+
+      // Compute detected resolution details
+      if (_controller!.value.isInitialized &&
+          _controller!.value.previewSize != null) {
+        final size = _controller!.value.previewSize!;
+        final width = size.height.toInt();
+        final height = size.width.toInt();
+        final mp = ((width * height) / 1000000.0).toStringAsFixed(1);
+        _detectedResolutionLabel = '${width}x$height ($mp MP)';
+      } else {
+        _detectedResolutionLabel = 'Detected Max Quality';
+      }
+
       if (mounted) setState(() {});
     } catch (e) {
       debugPrint('Camera setup error: $e');
@@ -82,6 +163,25 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_cameras.length < 2) return;
     _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras.length;
     await _setupController(_cameras[_selectedCameraIndex]);
+  }
+
+  Future<void> _setQualityMode(QualityMode mode) async {
+    if (_qualityMode == mode) return;
+    setState(() {
+      _qualityMode = mode;
+      _showSettingsMenu = false;
+    });
+
+    if (_cameras.isNotEmpty) {
+      await _setupController(_cameras[_selectedCameraIndex]);
+    }
+  }
+
+  Future<void> _setFaceEnhancementMode(FaceEnhancementMode mode) async {
+    setState(() {
+      _faceEnhancementMode = mode;
+      _showSettingsMenu = false;
+    });
   }
 
   Future<void> _setFlash(FlashMode mode) async {
@@ -120,7 +220,14 @@ class _CameraScreenState extends State<CameraScreen> {
 
     try {
       final XFile imageFile = await _controller!.takePicture();
-      final bytes = await imageFile.readAsBytes();
+      var bytes = await imageFile.readAsBytes();
+
+      // Apply optional Natural Face Enhancement if enabled
+      if (_faceEnhancementMode == FaceEnhancementMode.natural) {
+        bytes = Uint8List.fromList(
+          await compute(_applyNaturalFaceEnhancement, bytes),
+        );
+      }
 
       await AppFileStorage.saveStudentPhoto(
         schoolName: widget.schoolName,
@@ -141,7 +248,7 @@ class _CameraScreenState extends State<CameraScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Captured Roll ${_currentRoll.toString().padLeft(3, '0')}',
+              'Captured Roll ${_currentRoll.toString().padLeft(3, '0')}${_faceEnhancementMode == FaceEnhancementMode.natural ? " ✨ (Enhanced)" : ""}',
             ),
             duration: const Duration(milliseconds: 800),
             behavior: SnackBarBehavior.floating,
@@ -312,8 +419,10 @@ class _CameraScreenState extends State<CameraScreen> {
                     ),
                   ),
                   IconButton(
-                    onPressed: () =>
-                        setState(() => _showFlashMenu = !_showFlashMenu),
+                    onPressed: () => setState(() {
+                      _showFlashMenu = !_showFlashMenu;
+                      _showSettingsMenu = false;
+                    }),
                     icon: Icon(
                       _flashMode == FlashMode.always
                           ? Icons.flash_on
@@ -321,6 +430,21 @@ class _CameraScreenState extends State<CameraScreen> {
                           ? Icons.flash_auto
                           : Icons.flash_off,
                       color: _flashMode != FlashMode.off
+                          ? const Color(0xFFFFB300)
+                          : Colors.white,
+                      size: 26,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => setState(() {
+                      _showSettingsMenu = !_showSettingsMenu;
+                      _showFlashMenu = false;
+                    }),
+                    icon: Icon(
+                      Icons.tune,
+                      color:
+                          (_qualityMode != QualityMode.auto ||
+                              _faceEnhancementMode != FaceEnhancementMode.off)
                           ? const Color(0xFFFFB300)
                           : Colors.white,
                       size: 26,
@@ -385,6 +509,95 @@ class _CameraScreenState extends State<CameraScreen> {
                         _flashOption('On', FlashMode.always),
                         _flashOption('Auto', FlashMode.auto),
                         _flashOption('Torch', FlashMode.torch),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+            // Quality & Face Enhancement Drawer Menu
+            if (_showSettingsMenu)
+              Positioned(
+                top: 60,
+                left: 16,
+                right: 16,
+                child: Card(
+                  color: const Color(0xFF121214),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Camera Quality',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white12,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                _detectedResolutionLabel,
+                                style: const TextStyle(
+                                  color: Color(0xFFFFB300),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            _qualityChip('Auto', QualityMode.auto),
+                            const SizedBox(width: 8),
+                            _qualityChip('High', QualityMode.high),
+                            const SizedBox(width: 8),
+                            _qualityChip('Standard', QualityMode.standard),
+                          ],
+                        ),
+                        const SizedBox(height: 18),
+                        const Text(
+                          'Face Enhancement',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Subtle skin smoothing for student ID photos',
+                          style: TextStyle(color: Colors.grey, fontSize: 11),
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            _enhancementChip('Off', FaceEnhancementMode.off),
+                            const SizedBox(width: 8),
+                            _enhancementChip(
+                              'Natural ✨',
+                              FaceEnhancementMode.natural,
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
@@ -582,6 +795,58 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _qualityChip(String title, QualityMode mode) {
+    final selected = _qualityMode == mode;
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => _setQualityMode(mode),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFFFFB300) : Colors.white10,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            title,
+            style: TextStyle(
+              color: selected ? Colors.black : Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _enhancementChip(String title, FaceEnhancementMode mode) {
+    final selected = _faceEnhancementMode == mode;
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => _setFaceEnhancementMode(mode),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFFFFB300) : Colors.white10,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            title,
+            style: TextStyle(
+              color: selected ? Colors.black : Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
         ),
       ),
     );

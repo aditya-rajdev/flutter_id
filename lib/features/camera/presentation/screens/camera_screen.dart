@@ -7,7 +7,7 @@ import 'package:image/image.dart' as img;
 import '../../../../data/storage/app_file_storage.dart';
 import '../../../photo_gallery/photo_gallery_screen.dart';
 
-enum QualityMode { auto, high, standard }
+enum QualityMode { auto, high, standard, maxMp }
 
 enum FaceEnhancementMode { off, natural }
 
@@ -92,7 +92,10 @@ class _CameraScreenState extends State<CameraScreen> {
 
   QualityMode _qualityMode = QualityMode.auto;
   FaceEnhancementMode _faceEnhancementMode = FaceEnhancementMode.off;
-  String _detectedResolutionLabel = 'Auto (Max)';
+  String _detectedResolutionLabel = 'Auto (Max Sensor)';
+
+  int _lastCapturedWidth = 0;
+  int _lastCapturedHeight = 0;
 
   late int _currentRoll;
   late int _endRollInt;
@@ -123,6 +126,7 @@ class _CameraScreenState extends State<CameraScreen> {
     switch (mode) {
       case QualityMode.auto:
       case QualityMode.high:
+      case QualityMode.maxMp:
         return ResolutionPreset.max;
       case QualityMode.standard:
         return ResolutionPreset.high;
@@ -141,16 +145,20 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       await _controller!.initialize();
 
-      // Compute detected resolution details
-      if (_controller!.value.isInitialized &&
-          _controller!.value.previewSize != null) {
-        final size = _controller!.value.previewSize!;
-        final width = size.height.toInt();
-        final height = size.width.toInt();
-        final mp = ((width * height) / 1000000.0).toStringAsFixed(1);
-        _detectedResolutionLabel = '${width}x$height ($mp MP)';
+      // Display actual photo capture resolution if previously measured, or resolution mode
+      if (_lastCapturedWidth > 0 && _lastCapturedHeight > 0) {
+        final mp = ((_lastCapturedWidth * _lastCapturedHeight) / 1000000.0)
+            .toStringAsFixed(1);
+        _detectedResolutionLabel =
+            '${_lastCapturedWidth}x$_lastCapturedHeight ($mp MP)';
       } else {
-        _detectedResolutionLabel = 'Detected Max Quality';
+        if (_qualityMode == QualityMode.standard) {
+          _detectedResolutionLabel = 'Standard (HD)';
+        } else if (_qualityMode == QualityMode.maxMp) {
+          _detectedResolutionLabel = 'Max MP (Sensor Full)';
+        } else {
+          _detectedResolutionLabel = 'Auto (Max Sensor)';
+        }
       }
 
       if (mounted) setState(() {});
@@ -162,6 +170,8 @@ class _CameraScreenState extends State<CameraScreen> {
   Future<void> _toggleCameraLens() async {
     if (_cameras.length < 2) return;
     _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras.length;
+    _lastCapturedWidth = 0;
+    _lastCapturedHeight = 0;
     await _setupController(_cameras[_selectedCameraIndex]);
   }
 
@@ -170,6 +180,8 @@ class _CameraScreenState extends State<CameraScreen> {
     setState(() {
       _qualityMode = mode;
       _showSettingsMenu = false;
+      _lastCapturedWidth = 0;
+      _lastCapturedHeight = 0;
     });
 
     if (_cameras.isNotEmpty) {
@@ -221,6 +233,17 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       final XFile imageFile = await _controller!.takePicture();
       var bytes = await imageFile.readAsBytes();
+
+      // Read exact photo capture resolution dimensions from the captured image
+      final decodedHeader = img.decodeImage(bytes);
+      if (decodedHeader != null) {
+        _lastCapturedWidth = decodedHeader.width;
+        _lastCapturedHeight = decodedHeader.height;
+        final mp = ((_lastCapturedWidth * _lastCapturedHeight) / 1000000.0)
+            .toStringAsFixed(1);
+        _detectedResolutionLabel =
+            '${_lastCapturedWidth}x$_lastCapturedHeight ($mp MP)';
+      }
 
       // Apply optional Natural Face Enhancement if enabled
       if (_faceEnhancementMode == FaceEnhancementMode.natural) {
@@ -567,10 +590,12 @@ class _CameraScreenState extends State<CameraScreen> {
                         Row(
                           children: [
                             _qualityChip('Auto', QualityMode.auto),
-                            const SizedBox(width: 8),
+                            const SizedBox(width: 6),
                             _qualityChip('High', QualityMode.high),
-                            const SizedBox(width: 8),
+                            const SizedBox(width: 6),
                             _qualityChip('Standard', QualityMode.standard),
+                            const SizedBox(width: 6),
+                            _qualityChip('Max MP', QualityMode.maxMp),
                           ],
                         ),
                         const SizedBox(height: 18),
@@ -818,7 +843,7 @@ class _CameraScreenState extends State<CameraScreen> {
             style: TextStyle(
               color: selected ? Colors.black : Colors.white,
               fontWeight: FontWeight.bold,
-              fontSize: 12,
+              fontSize: 11,
             ),
           ),
         ),

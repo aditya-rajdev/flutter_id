@@ -96,16 +96,29 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _takePicture() async {
-    if (_controller == null || !_controller!.value.isInitialized || _isCapturing) return;
+    if (_controller == null ||
+        !_controller!.value.isInitialized ||
+        _isCapturing) {
+      return;
+    }
 
     setState(() {
       _isCapturing = true;
       _isFlashing = true;
     });
 
+    // Immediate click sound and haptic feedback
+    SystemSound.play(SystemSoundType.click);
+    HapticFeedback.mediumImpact();
+
+    // Turn off white flash quickly (60ms) for a natural, brief shutter flash
+    Future.delayed(const Duration(milliseconds: 60), () {
+      if (mounted) {
+        setState(() => _isFlashing = false);
+      }
+    });
+
     try {
-      SystemSound.play(SystemSoundType.click);
-      HapticFeedback.mediumImpact();
       final XFile imageFile = await _controller!.takePicture();
       final bytes = await imageFile.readAsBytes();
 
@@ -117,17 +130,21 @@ class _CameraScreenState extends State<CameraScreen> {
         imageBytes: bytes,
       );
 
-      setState(() {
-        if (_currentRoll < _endRollInt) {
-          _currentRoll++;
-        }
-      });
-
       if (mounted) {
+        setState(() {
+          if (_currentRoll < _endRollInt) {
+            _currentRoll++;
+          }
+        });
+
+        ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Captured Roll ${_currentRoll.toString().padLeft(3, '0')}'),
-            duration: const Duration(milliseconds: 900),
+            content: Text(
+              'Captured Roll ${_currentRoll.toString().padLeft(3, '0')}',
+            ),
+            duration: const Duration(milliseconds: 800),
+            behavior: SnackBarBehavior.floating,
           ),
         );
       }
@@ -193,10 +210,15 @@ class _CameraScreenState extends State<CameraScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Colors.white70),
+              ),
             ),
             FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF00E5FF)),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF00E5FF),
+              ),
               onPressed: () {
                 final roll = int.tryParse(controller.text.trim());
                 if (roll != null && roll >= 1 && roll <= _endRollInt) {
@@ -204,11 +226,21 @@ class _CameraScreenState extends State<CameraScreen> {
                   Navigator.pop(dialogContext);
                 } else {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Enter roll number between 1 and $_endRollInt')),
+                    SnackBar(
+                      content: Text(
+                        'Enter roll number between 1 and $_endRollInt',
+                      ),
+                    ),
                   );
                 }
               },
-              child: const Text('Jump', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+              child: const Text(
+                'Jump',
+                style: TextStyle(
+                  color: Colors.black,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ],
         );
@@ -271,24 +303,34 @@ class _CameraScreenState extends State<CameraScreen> {
                 children: [
                   IconButton(
                     onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
+                    icon: const Icon(
+                      Icons.arrow_back,
+                      color: Colors.white,
+                      size: 28,
+                    ),
                   ),
                   IconButton(
-                    onPressed: () => setState(() => _showFlashMenu = !_showFlashMenu),
+                    onPressed: () =>
+                        setState(() => _showFlashMenu = !_showFlashMenu),
                     icon: Icon(
                       _flashMode == FlashMode.always
                           ? Icons.flash_on
                           : _flashMode == FlashMode.auto
                           ? Icons.flash_auto
                           : Icons.flash_off,
-                      color: _flashMode != FlashMode.off ? const Color(0xFFFFB300) : Colors.white,
+                      color: _flashMode != FlashMode.off
+                          ? const Color(0xFFFFB300)
+                          : Colors.white,
                       size: 26,
                     ),
                   ),
                   const Spacer(),
                   // HUD Chip
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 6,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.black45,
                       borderRadius: BorderRadius.circular(20),
@@ -297,14 +339,22 @@ class _CameraScreenState extends State<CameraScreen> {
                       children: [
                         Text(
                           '${widget.className} ${widget.sectionName}',
-                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                         const SizedBox(width: 8),
                         const Text('•', style: TextStyle(color: Colors.grey)),
                         const SizedBox(width: 8),
                         Text(
                           'Roll: ${_currentRoll.toString().padLeft(3, '0')}',
-                          style: const TextStyle(color: Color(0xFFFFB300), fontSize: 12, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                            color: Color(0xFFFFB300),
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ],
                     ),
@@ -321,7 +371,9 @@ class _CameraScreenState extends State<CameraScreen> {
                 right: 16,
                 child: Card(
                   color: const Color(0xFF121214),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                   child: Padding(
                     padding: const EdgeInsets.all(8),
                     child: Row(
@@ -337,30 +389,6 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
               ),
 
-            // Zoom Pointers Pill
-            Positioned(
-              bottom: 150,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _zoomButton('1x', 1.0),
-                      const SizedBox(width: 8),
-                      _zoomButton('2x', 2.0),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-
             // Bottom Camera Control Bar
             Positioned(
               bottom: 0,
@@ -368,10 +396,34 @@ class _CameraScreenState extends State<CameraScreen> {
               right: 0,
               child: Container(
                 color: Colors.black,
-                padding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    // Zoom Control Selector Pill
+                    Center(
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1C1C1E),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.white24, width: 1),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _zoomButton('1x', 1.0),
+                            const SizedBox(width: 6),
+                            _zoomButton('2x', 2.0),
+                          ],
+                        ),
+                      ),
+                    ),
+
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -379,10 +431,16 @@ class _CameraScreenState extends State<CameraScreen> {
                         IconButton(
                           style: IconButton.styleFrom(
                             backgroundColor: const Color(0xFF1C1C1E),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
                           ),
                           onPressed: _openGallery,
-                          icon: const Icon(Icons.photo_library, color: Colors.white, size: 26),
+                          icon: const Icon(
+                            Icons.photo_library,
+                            color: Colors.white,
+                            size: 26,
+                          ),
                         ),
 
                         // Shutter Trigger Button
@@ -412,7 +470,11 @@ class _CameraScreenState extends State<CameraScreen> {
                             shape: const CircleBorder(),
                           ),
                           onPressed: _toggleCameraLens,
-                          icon: const Icon(Icons.cameraswitch, color: Colors.white, size: 26),
+                          icon: const Icon(
+                            Icons.cameraswitch,
+                            color: Colors.white,
+                            size: 26,
+                          ),
                         ),
                       ],
                     ),
@@ -434,7 +496,11 @@ class _CameraScreenState extends State<CameraScreen> {
                               child: const Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Icon(Icons.skip_next, color: Color(0xFFFF6D00), size: 18),
+                                  Icon(
+                                    Icons.skip_next,
+                                    color: Color(0xFFFF6D00),
+                                    size: 18,
+                                  ),
                                   SizedBox(width: 6),
                                   Text(
                                     'Skip',
@@ -448,14 +514,22 @@ class _CameraScreenState extends State<CameraScreen> {
                               ),
                             ),
                           ),
-                          Container(width: 1, height: 18, color: Colors.white24),
+                          Container(
+                            width: 1,
+                            height: 18,
+                            color: Colors.white24,
+                          ),
                           Expanded(
                             child: InkWell(
                               onTap: _takePicture,
                               child: const Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Icon(Icons.refresh, color: Color(0xFFFFD600), size: 18),
+                                  Icon(
+                                    Icons.refresh,
+                                    color: Color(0xFFFFD600),
+                                    size: 18,
+                                  ),
                                   SizedBox(width: 6),
                                   Text(
                                     'Retake',
@@ -469,14 +543,22 @@ class _CameraScreenState extends State<CameraScreen> {
                               ),
                             ),
                           ),
-                          Container(width: 1, height: 18, color: Colors.white24),
+                          Container(
+                            width: 1,
+                            height: 18,
+                            color: Colors.white24,
+                          ),
                           Expanded(
                             child: InkWell(
                               onTap: _showJumpDialog,
                               child: const Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Icon(Icons.redo, color: Color(0xFF00E5FF), size: 18),
+                                  Icon(
+                                    Icons.redo,
+                                    color: Color(0xFF00E5FF),
+                                    size: 18,
+                                  ),
                                   SizedBox(width: 6),
                                   Text(
                                     'Jump',
@@ -518,25 +600,34 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Widget _zoomButton(String label, double level) {
-    final selected = _zoomLevel == level;
-    return GestureDetector(
-      onTap: () {
-        setState(() => _zoomLevel = level);
-        _controller?.setZoomLevel(level);
+    final selected = (_zoomLevel - level).abs() < 0.1;
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: () async {
+        if (_controller == null || !_controller!.value.isInitialized) return;
+        try {
+          final minZoom = await _controller!.getMinZoomLevel();
+          final maxZoom = await _controller!.getMaxZoomLevel();
+          final targetZoom = level.clamp(minZoom, maxZoom);
+          await _controller!.setZoomLevel(targetZoom);
+          if (mounted) {
+            setState(() => _zoomLevel = targetZoom);
+          }
+        } catch (e) {
+          debugPrint('Zoom level error: $e');
+        }
       },
       child: Container(
-        width: 32,
-        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
           color: selected ? Colors.white24 : Colors.transparent,
-          shape: BoxShape.circle,
+          borderRadius: BorderRadius.circular(14),
         ),
-        alignment: Alignment.center,
         child: Text(
           label,
           style: TextStyle(
             color: selected ? const Color(0xFFFFB300) : Colors.white,
-            fontSize: 11,
+            fontSize: 13,
             fontWeight: FontWeight.bold,
           ),
         ),
